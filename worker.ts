@@ -1,7 +1,7 @@
 import { Worker, Job, DelayedError } from "bullmq";
 import { loadQueues } from "@/services/queue-registry";
 import { BaseQueue } from "@/queues/base-queue";
-import { Effect, Layer, Data, pipe } from "effect";
+import { Effect, Layer, Data, pipe, ManagedRuntime } from "effect";
 import type { QueueMiddleware } from "@/queues/middleware/base";
 import { WithoutOverlapping } from "@/queues/middleware/without-overlapping";
 import { RedisLockLive, LockService, RedisTag } from "@/services/lock";
@@ -101,6 +101,9 @@ const main = async () => {
   // For production, use the Redis-backed lock service.
   const AppLayer = Layer.provide(RedisLockLive, Layer.succeed(RedisTag, redis));
 
+  // Create a runtime that provides the application's dependencies
+  const Runtime = ManagedRuntime.make(AppLayer);
+
   // For testing, you could use the in-memory lock service:
   // const AppLayer = MemoryLockLive;
 
@@ -111,7 +114,6 @@ const main = async () => {
     async (job: Job, token?: string) => {
       const effect = pipe(
         processJob(job),
-        Effect.provide(AppLayer),
         Effect.catchAll((error) => {
           if (error instanceof JobReleased) {
             console.warn(`[Worker] Releasing job ${error.jobName} for ${error.delay}s`);
@@ -127,8 +129,7 @@ const main = async () => {
       );
 
       try {
-        // @ts-expect-error
-        await Effect.runPromise(effect);
+        await Runtime.runPromise(effect);
       } catch (error) {
         if (error instanceof JobReleased) {
           await job.moveToDelayed(Date.now() + error.delay * 1000, token);
