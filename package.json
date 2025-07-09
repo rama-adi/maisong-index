@@ -1,10 +1,12 @@
 {
   "name": "constantan",
-  "module": "index.ts",
+  "module": "index.tsx",
   "type": "module",
   "private": true,
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6"
   },
   "peerDependencies": {
     "typescript": "^5"
@@ -13,6 +15,8 @@
     "@queuedash/api": "^3.6.0",
     "bullmq": "^5.56.2",
     "effect": "^3.16.12",
-    "hono": "^4.8.4"
+    "hono": "^4.8.4",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
   }
 }

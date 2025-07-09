@@ -4,6 +4,8 @@ import { Effect } from "effect";
 import type { QueueMiddleware } from "./middleware/base";
 import { RateLimited } from "./middleware/rate-limited";
 import { WithoutOverlapping } from "./middleware/without-overlapping";
+import { QueueLabel } from "./middleware/queue-label";
+import { QueueTag as TagMiddleware } from "./middleware/queue-tag";
 
 export const LogSchema = S.Struct({
     id: S.Number,
@@ -15,6 +17,8 @@ export class LogQueue extends QueueTag("sendLog")<typeof LogSchema> {
 
     static override middleware(data: S.Schema.Type<typeof LogSchema>): QueueMiddleware[] {
         return [
+            new QueueLabel("Logs"),
+            new TagMiddleware(`id:${data.id}`),
             new WithoutOverlapping(`log-${data.id}`)
         ];
     }

@@ -120,8 +120,10 @@ const main = async () => {
             return Effect.fail(error);
           }
           if (error instanceof JobDiscarded) {
-            console.log(`[Worker] Skipping job ${error.jobName}: ${error.cause}`);
-            return Effect.void;
+            if (!error.cause.includes("without-overlapping")) {
+              console.log(`[Worker] Skipping job ${error.jobName}: ${error.cause}`);
+            }
+            return Effect.flatMap(LockService, () => Effect.void);
           }
           console.error("Job failed", error);
           return Effect.fail(error);
@@ -129,7 +131,7 @@ const main = async () => {
       );
 
       try {
-        await Runtime.runPromise(effect);
+        await Runtime.runPromise(effect as Effect.Effect<void | undefined, Error, LockService>);
       } catch (error) {
         if (error instanceof JobReleased) {
           await job.moveToDelayed(Date.now() + error.delay * 1000, token);
@@ -151,5 +153,4 @@ const main = async () => {
 
 main().catch((err) => {
   console.error("Failed to start worker:", err);
-  process.exit(1);
-});
+  process.exit(1);});
