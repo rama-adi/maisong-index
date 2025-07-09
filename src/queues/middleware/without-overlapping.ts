@@ -45,8 +45,9 @@ export class WithoutOverlapping implements QueueMiddleware {
   }
 
   get key(): string {
-    // If shared, the key is just the suffix. Otherwise, it's prefixed with the job name.
-    return this._isShared ? this.keySuffix : `${this.keySuffix}`;
+    // Prefix to make it easy to identify in logs and error messages
+    const base = this._isShared ? this.keySuffix : `${this.keySuffix}`;
+    return `without-overlapping:${base}`;
   }
 
   private getLockKey(job: Job): string {
