@@ -6,6 +6,7 @@ out
 dist
 *.tgz
 src/web/public/dist
+.temp_transform
 
 # code coverage
 coverage

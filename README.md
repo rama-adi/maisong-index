@@ -56,6 +56,52 @@ src/
 bunfig.toml   # Bun server configuration
 ```
 
+### tRPC
+tRPC is preinstalled for you. It's already used in the dashboard for the queue display. If you would like to use the tRPC types on
+other client such as React Native, you can do so without creating a monorepo! Simply run:
+```sh
+bun run trpc-codegen
+```
+
+and tRPC types is exported for your react query (or vanilla client) to use:
+```ts
+import { QueryClient } from "@tanstack/react-query";
+import { createTRPCOptionsProxy } from '@trpc/tanstack-react-query';
+import { createTRPCClient, httpBatchLink } from "@trpc/client";
+import type { API } from "../../../dist/api";
+export const queryClient = new QueryClient();
+
+const trpcClient = createTRPCClient<API>({
+    links: [httpBatchLink({ url: 'http://localhost:3000/trpc' })],
+});
+
+export const trpc = createTRPCOptionsProxy<AppRouter>({
+    client: trpcClient,
+    queryClient,
+});
+
+// use as normal:
+const trpc = useTRPC();
+const queryClient = useQueryClient();
+
+// Create QueryOptions which can be passed to query hooks
+const myQueryOptions = trpc.path.to.query.queryOptions({ /** inputs */ })
+const myQuery = useQuery(myQueryOptions)
+```
+...or vanilla:
+```ts
+import { createTRPCClient, httpBatchLink } from '@trpc/client';
+import type { API } from "../../../dist/api";
+const trpcClient = createTRPCClient<API>({
+    links: [httpBatchLink({ url: 'http://localhost:3000/trpc' })],
+});
+
+// use as normal:
+const bilbo = await client.getUser.query('id_bilbo');
+```
+
+_if you need to update it just rerun the script and copy and paste the generated `api.d.ts` file. This is under the assumption that you or your team are the one consuming it and you're ABSOLUTELY sure that this workflow is fine for you (it is for me)._
+
 ### Example Queue
 
 `LogQueue` demonstrates how to implement a queue with middleware:
