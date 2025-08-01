@@ -50,13 +50,13 @@ function makeJobProcessor(registry: Record<string, typeof BaseQueue<any>>) {
         return yield* Effect.fail(new UnhandledJobError({ jobName: job.name }))
       }
 
-      
       const data = yield* Effect.try({
-        try: () => QueueClass.validate(job.data),
+        try: () => QueueClass.validate(job.data.__data),
         catch: (cause) => new JobValidationError({ jobName: job.name, cause }),
       });
 
       const middleware = QueueClass.middleware(data);
+      
       yield* runMiddleware(job, middleware);
 
       const result = QueueClass.handle(data);

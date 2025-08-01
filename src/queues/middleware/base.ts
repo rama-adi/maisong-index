@@ -27,3 +27,24 @@ export interface QueueMiddleware {
    */
   get key(): string;
 }
+
+
+export function addQueueMetadata(job: Job, key: string, value: string | string[]) {
+  const data = job.data as any;
+  
+  // Create a copy of the current data to avoid modifying the original
+  const updatedData = { ...data };
+  
+  updatedData.__metadata = updatedData.__metadata || {};
+  
+  if (Array.isArray(value)) {
+    // Append mode with deduplication for arrays
+    const existing = Array.isArray(updatedData.__metadata[key]) ? updatedData.__metadata[key] : [];
+    const combined = [...existing, ...value];
+    updatedData.__metadata[key] = [...new Set(combined)]; // Deduplicate
+  } else {
+    updatedData.__metadata[key] = value;
+  }
+  
+  job.updateData(updatedData);
+}

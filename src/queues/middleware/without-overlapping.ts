@@ -1,14 +1,14 @@
 import { Job } from "bullmq";
 import { Effect } from "effect";
-import { LockService } from "@/services/lock";
-import type { QueueMiddleware, MiddlewareResult } from "./base";
+import { LockService, LockAcquisitionError } from "@/services/lock";
+import { type QueueMiddleware, type MiddlewareResult, addQueueMetadata } from "./base";
 
 export class WithoutOverlapping implements QueueMiddleware {
   private _releaseAfter: number | false = false; // Default: discard overlapping jobs
   private _expireAfter: number = 60 * 60; // Default lock expiry of 1 hour
   private _isShared = false;
 
-  constructor(private readonly keySuffix: string) {}
+  constructor(private readonly keySuffix: string) { }
 
   /**
    * The number of seconds to wait before re-attempting the job.
@@ -63,11 +63,22 @@ export class WithoutOverlapping implements QueueMiddleware {
       lockService.acquire(lockKey, { expiry: this._expireAfter }).pipe(
         Effect.map((acquired) => {
           if (acquired) {
-            return true; // Proceed
+            addQueueMetadata(job, "skipped", "f");
+            return true; // Proceed - we got the lock first
           }
+          addQueueMetadata(job, "skipped", "t");
           return this._releaseAfter; // Release with delay, or `false` to discard
         }),
-        Effect.catchAll(() => Effect.succeed(this._releaseAfter))
+        Effect.catchAll((error) => {
+          // If Redis is unavailable, fail open - allow jobs to proceed
+          // since we can't maintain proper locks anyway
+          if (error instanceof LockAcquisitionError) {
+            addQueueMetadata(job, "skipped", "f");
+            return Effect.succeed<MiddlewareResult>(true);
+          }
+          addQueueMetadata(job, "skipped", "t");
+          return Effect.succeed<MiddlewareResult>(this._releaseAfter);
+        })
       )
     );
   }

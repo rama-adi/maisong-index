@@ -12,11 +12,18 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@queuedash/api": "^3.6.0",
+    "@effect/platform": "^0.90.0",
+    "@effect/platform-bun": "^0.77.0",
+    "@tanstack/react-query": "^5.84.0",
+    "@trpc/client": "^11.4.3",
+    "@trpc/server": "^11.4.3",
+    "@trpc/tanstack-react-query": "^11.4.3",
     "bullmq": "^5.56.2",
+    "bun-plugin-tailwind": "^0.0.15",
+    "dayjs": "^1.11.13",
     "effect": "^3.16.12",
-    "hono": "^4.8.4",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "tailwindcss": "^4.1.11"
   }
 }

@@ -1,6 +1,6 @@
 import { Job } from "bullmq";
 import { Effect } from "effect";
-import type { QueueMiddleware, MiddlewareResult } from "./base";
+import { type QueueMiddleware, type MiddlewareResult, addQueueMetadata } from "./base";
 
 /**
  * Middleware that attaches a label to the job data. This label can later be
@@ -15,7 +15,7 @@ export class QueueLabel implements QueueMiddleware {
 
   handle(job: Job): Effect.Effect<MiddlewareResult, never> {
     return Effect.sync(() => {
-      ;(job.data as any).__label = this.label
+      addQueueMetadata(job, "label", this.label)
       return true
     })
   }

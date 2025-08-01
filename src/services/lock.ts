@@ -57,10 +57,13 @@ export const RedisLockLive = Layer.effect(
               return result === 1;
             }
           },
-          catch: () => new LockAcquisitionError({ key }),
+          catch: (error) => new LockAcquisitionError({ key }),
         }),
       release: (key) =>
-        Effect.tryPromise({ try: () => redis.del(key), catch: () => {} }).pipe(
+        Effect.tryPromise({ 
+          try: async () => redis.del(key), 
+          catch: () => {} 
+        }).pipe(
           Effect.catchAll(() => Effect.void),
           Effect.asVoid
         ),

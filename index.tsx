@@ -1,164 +1,104 @@
-import { Hono as hono } from 'hono';
-import { Effect, ManagedRuntime, Layer } from 'effect';
+import { ManagedRuntime, Layer } from 'effect';
 import { Queue } from 'bullmq';
 import { QueueService, QueueServiceLive } from '@/services/queue';
-import { createHonoAdapter } from '@queuedash/api';
-import { LogQueue } from '@/queues/log.queue';
-import { renderToString } from 'react-dom/server';
-import React from 'react';
-
 const connection = { host: "127.0.0.1", port: 6379 } as const;
 const bullQueue = new Queue("app", { connection });
+import { serve } from 'bun';
+import type { BunRequest } from "bun";
+import { fetchRequestHandler } from '@trpc/server/adapters/fetch';
+import { appRouter } from '@/web/trpc';
 
-const Runtime = ManagedRuntime.make(Layer.mergeAll(
-    Layer.succeed(QueueService, QueueServiceLive(bullQueue))
+import dashboardIndex from "@/web/dashboard/index.html";
+import dashboardLogin from "@/web/dashboard/login.html";
+
+export const Runtime = ManagedRuntime.make(Layer.mergeAll(
+  Layer.succeed(QueueService, QueueServiceLive(bullQueue))
 ));
 
-const app = new hono();
+// Workaround: https://github.com/oven-sh/bun/issues/17595
+// this is safe as every API needs a valid session. Just a niceties so that if there's no valid
+// session, a login page is shown instead of a brief flash.
+const nonce = `/dynr_${crypto.randomUUID()}`;
 
-function Layout({ children }: { children: React.ReactNode }) {
-  return (
-    <html>
-      <head>
-        <title>Queue Dashboard</title>
-        <link
-          href="https://cdn.jsdelivr.net/npm/tailwindcss@2/dist/tailwind.min.css"
-          rel="stylesheet"
-        />
-      </head>
-      <body className="p-4">{children}</body>
-    </html>
-  );
+const initTrpcFetch = async (req: BunRequest) => {
+  return fetchRequestHandler({
+    endpoint: '/trpc',
+    req: req,
+    router: appRouter,
+    createContext: () => ({
+      headers: req.headers,
+      effectRuntime: Runtime,
+      cookies: req.cookies
+    }),
+  });
 }
 
-app.get('/dashboard', async (c) => {
-  const counts = await bullQueue.getJobCounts(
-    'active',
-    'completed',
-    'failed'
-  );
-  const jobs = await bullQueue.getJobs(
-    ['active', 'waiting', 'failed', 'completed'],
-    0,
-    20,
-    false
-  );
+const matchDashboard = async (request: BunRequest) => {
+  const token = request.cookies.get('TOKEN');
+  const validToken = process.env.DASHBOARD_TOKEN;
 
-  const body = renderToString(
-    <Layout>
-      <h1 className="text-2xl font-bold mb-4">Jobs</h1>
-      <p className="mb-2">Running: {counts.active} | Done: {counts.completed} | Failed: {counts.failed}</p>
-      <table className="table-auto w-full border">
-        <thead>
-          <tr className="bg-gray-200">
-            <th className="px-2">ID</th>
-            <th className="px-2">Name</th>
-            <th className="px-2">Label</th>
-            <th className="px-2">Tags</th>
-            <th className="px-2">State</th>
-          </tr>
-        </thead>
-        <tbody>
-          {jobs.map((j) => (
-            <tr key={j.id} className="border-t">
-              <td className="px-2">
-                <a className="text-blue-600" href={`/dashboard/${j.id}`}>{j.id}</a>
-              </td>
-              <td className="px-2">{j.name}</td>
-              <td className="px-2">{(j.data as any).__label}</td>
-              <td className="px-2">{Array.isArray((j.data as any).__tags) ? (j.data as any).__tags.join(', ') : ''}</td>
-              <td className="px-2">{j.finishedOn ? 'completed' : j.failedReason ? 'failed' : j.processedOn ? 'active' : 'waiting'}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </Layout>
-  );
-  return c.html(body);
-});
+  if (!token || token !== validToken) {
+    const data: Response = await fetch(`${server.url}${nonce}/dashboard-login`);
+    return new Response(await data.text(), {
+      headers: { "Content-Type": "text/html" }
+    });
+  }
 
-app.get('/dashboard/:id', async (c) => {
-  const id = c.req.param('id');
-  const job = await bullQueue.getJob(id);
-  if (!job) return c.notFound();
-  const body = renderToString(
-    <Layout>
-      <h1 className="text-2xl font-bold mb-4">Job {id}</h1>
-      <pre>{JSON.stringify(job.toJSON(), null, 2)}</pre>
-    </Layout>
-  );
-  return c.html(body);
-});
+  const data: Response = await fetch(`${server.url}${nonce}/dashboard`);
+  return new Response(await data.text(), {
+    headers: { "Content-Type": "text/html" }
+  });
+}
 
-app.route(
-    "/queuedash",
-    createHonoAdapter({
-        baseUrl: "/queuedash",
-        ctx: {
-            queues: [
-                {
-                    queue: bullQueue,
-                    displayName: "Reports",
-                    type: "bull" as const,
-                },
-            ],
-        },
-    })
-);
+const server = serve({
+  routes: {
+    [`${nonce}/dashboard`]: dashboardIndex,
+    [`${nonce}/dashboard-login`]: dashboardLogin,
+    "/dashboard": {
+      async GET(request: BunRequest): Promise<Response> {
+        return matchDashboard(request);
+      },
+      async POST(request: BunRequest): Promise<Response> {
+        const formData = await request.formData();
+        const token = formData.get('token');
+        const validToken = process.env.DASHBOARD_TOKEN;
 
-app.get('/work', (c) =>
-    Runtime.runPromise(Effect.gen(function* (_) {
-        const queueService = yield* _(QueueService);
-
-        // Submit first job
-        console.log("Submitting first job...");
-        yield* _(
-            queueService.enqueue(
-                new LogQueue({
-                    id: 1,
-                    message: "First job - should run"
-                })
-            )
-        );
-
-
-        for (let i = 2; i <= 6; i++) {
-            yield* _(
-                queueService.enqueue(
-                    new LogQueue({
-                        id: 1,
-                        message: `Job ${i} - should be discarded`
-                    })
-                )
-            );
+        if (!token || token !== validToken) {
+          return new Response('Invalid token', {
+            status: 401,
+            headers: { "Content-Type": "text/plain" }
+          });
         }
 
+        const expiryDate = new Date();
+        expiryDate.setDate(expiryDate.getDate() + 1);
 
+        return new Response('Login successful', {
+          status: 200,
+          headers: {
+            "Content-Type": "text/plain",
+            "Set-Cookie": `TOKEN=${token}; Path=/; HttpOnly; Expires=${expiryDate.toUTCString()}`
+          }
+        });
+      }
+    },
+    "/dashboard/*": {
+      async GET(request: BunRequest): Promise<Response> {
+        return matchDashboard(request);
+      },
+    },
+    "/trpc/*": async req => {
+      return initTrpcFetch(req);
+    },
+    "/trpc": async req => {
+      return initTrpcFetch(req);
+    },
+  },
 
-        yield* _(
-            queueService.enqueue(
-                new LogQueue({
-                    id: 2,
-                    message: "Final job - should run"
-                })
-            )
-        );
+  development: process.env.NODE_ENV !== "production" && {
+    hmr: true,
+    console: true,
+  },
+});
 
-        return c.text("Sus")
-    }))
-);
-
-
-app.get('/', (c) =>
-    Runtime.runPromise(
-        Effect.gen(function* () {
-            // Here you can use effect as you are used to
-            yield* Effect.log('Handling /');
-
-            return c.text('Hello, world');
-        })
-    )
-);
-
-
-export default app
+console.log(`🚀 Server running at ${server.url}`);
