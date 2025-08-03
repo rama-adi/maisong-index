@@ -18,6 +18,7 @@ export const queueRouter = router({
                     message: 'You are not authorized to view the queues.',
                 });
             }
+            
             const program = Effect.gen(function* () {
                 const queue = yield* QueueService
                 return yield* queue.getJobs({
