@@ -85,7 +85,7 @@ export function DashboardQueues() {
                 <TableHeader>
                     <TableRow>
                         <TableHead>Job ID</TableHead>
-                        <TableHead>Queue Name</TableHead>
+                        <TableHead>Job Name</TableHead>
                         <TableHead>Data</TableHead>
                         <TableHead>Metadata</TableHead>
                     </TableRow>
@@ -97,7 +97,7 @@ export function DashboardQueues() {
                                 {job.id}
                             </TableCell>
                             <TableCell>
-                                {job.metadata.name?.[0] || 'Unknown'}
+                                {job.metadata.name || 'Unknown'}
                             </TableCell>
                             <TableCell className="max-w-md">
                                 <div className="truncate">
