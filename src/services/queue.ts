@@ -7,7 +7,7 @@ export const QueueJobData = Schema.Struct({
     data: Schema.Unknown,
     metadata: Schema.Record({
         key: Schema.String,
-        value: Schema.Array(Schema.String)
+        value: Schema.String
     })
 })
 
