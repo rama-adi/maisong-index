@@ -2,7 +2,7 @@ import { Worker, Job, DelayedError } from "bullmq";
 import { loadQueues } from "@/services/queue-registry";
 import { BaseQueue } from "@/queues/base-queue";
 import { Effect, Layer, Data, pipe, ManagedRuntime } from "effect";
-import type { QueueMiddleware } from "@/queues/middleware/base";
+import { addQueueMetadata, type QueueMiddleware } from "@/queues/middleware/base";
 import { WithoutOverlapping } from "@/queues/middleware/without-overlapping";
 import { RedisLockLive, LockService, RedisTag } from "@/services/lock";
 import { Redis } from "ioredis";
@@ -44,6 +44,9 @@ function runMiddleware(job: Job, middleware: QueueMiddleware[]): Effect.Effect<v
 function makeJobProcessor(registry: Record<string, typeof BaseQueue<any>>) {
   return (job: Job) =>
     Effect.gen(function* () {
+      // Mark job as working when processing starts
+      addQueueMetadata(job, "progress", "working");
+      
       const QueueClass = registry[job.name];
 
       if (!QueueClass) {
@@ -80,6 +83,9 @@ function makeJobProcessor(registry: Record<string, typeof BaseQueue<any>>) {
           catch: (cause) => new JobExecutionError({ jobName: job.name, cause }),
         });
       }
+
+      // Mark job as finished when processing completes successfully
+      addQueueMetadata(job, "progress", "finished");
 
       // Release the lock if WithoutOverlapping middleware was used
       const withoutOverlapping = middleware.find((m) => m instanceof WithoutOverlapping) as WithoutOverlapping | undefined;
@@ -120,11 +126,15 @@ const main = async () => {
             return Effect.fail(error);
           }
           if (error instanceof JobDiscarded) {
+            // Mark job as skipped when discarded by middleware
+            addQueueMetadata(job, "progress", "skipped");
             if (!error.cause.includes("without-overlapping")) {
               console.log(`[Worker] Skipping job ${error.jobName}: ${error.cause}`);
             }
             return Effect.flatMap(LockService, () => Effect.void);
           }
+          // Mark job as failed for all other errors
+          addQueueMetadata(job, "progress", "failed");
           console.error("Job failed", error);
           return Effect.fail(error);
         })
@@ -137,6 +147,12 @@ const main = async () => {
           await job.moveToDelayed(Date.now() + error.delay * 1000, token);
           throw new DelayedError();
         }
+        // Mark job as failed if it wasn't already marked by Effect.catchAll
+        // Check if progress metadata is already set to avoid overwriting skipped status
+        const currentProgress = job.data.__metadata?.progress;
+        if (!currentProgress) {
+          addQueueMetadata(job, "progress", "failed");
+        }
         // For all other errors, let BullMQ handle the failure.
         throw error;
       }
@@ -146,6 +162,10 @@ const main = async () => {
 
   worker.on("failed", (job, err) => {
     console.error(`[BullMQ] Job ${job?.name}#${job?.id} failed: ${err.message}`);
+    // Ensure failed jobs are marked with failed progress
+    if (job) {
+      addQueueMetadata(job, "progress", "failed");
+    }
   });
 
   console.log("[Worker] Listening for jobs on 'myQueue'...");
