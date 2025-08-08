@@ -29,7 +29,9 @@ export interface QueueMiddleware {
 }
 
 
-export function addQueueMetadata(job: Job, key: string, value: string | string[]) {
+export type MetadataValue = string | string[] | number | boolean;
+
+export function addQueueMetadata(job: Job, key: string, value: MetadataValue) {
   const data = job.data as any;
   
   // Create a copy of the current data to avoid modifying the original
@@ -47,4 +49,14 @@ export function addQueueMetadata(job: Job, key: string, value: string | string[]
   }
   
   job.updateData(updatedData);
+}
+
+/**
+ * Returns true if the job's stored middleware metadata contains at least one
+ * middleware key that satisfies the predicate.
+ */
+export function hasMiddleware(job: Job, predicate: (key: string) => boolean): boolean {
+  const keys: unknown = (job.data as any)?.__metadata?.middleware;
+  if (!Array.isArray(keys)) return false;
+  return keys.some((k) => typeof k === 'string' && predicate(k));
 }

@@ -1,7 +1,7 @@
 import path from "path";
 import { fileURLToPath } from "url";
 import { readdirSync } from "fs";
-import { BaseQueue } from "@/queues/base-queue.js";
+import { BaseQueue, type QueueConstructor } from "@/queues/base-queue.js";
 
 // Dynamically import every *.queue.ts file in /queues and build a registry
 export async function loadQueues() {
@@ -12,7 +12,7 @@ export async function loadQueues() {
   const files = readdirSync(queuesDir)
     .filter((f) => f.endsWith(".queue.ts") || f.endsWith(".queue.js"));
 
-  const registry: Record<string, typeof BaseQueue<any>> = {};
+  const registry: Record<string, QueueConstructor<any>> = {};
 
   for (const file of files) {
     const modulePath = path.join(queuesDir, file);
@@ -23,7 +23,7 @@ export async function loadQueues() {
         typeof exported === "function" &&
         exported.prototype instanceof BaseQueue
       ) {
-        const cls = exported as unknown as typeof BaseQueue<any> & { name: string };
+        const cls = exported as unknown as QueueConstructor<any> & { name: string };
         if (cls.name) {
           registry[cls.name] = cls;
         }

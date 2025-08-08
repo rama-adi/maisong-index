@@ -1,8 +1,4 @@
-import { ManagedRuntime, Layer } from 'effect';
-import { Queue } from 'bullmq';
-import { QueueService, QueueServiceLive } from '@/services/queue';
-const connection = { host: "127.0.0.1", port: 6379 } as const;
-const bullQueue = new Queue("app", { connection });
+import { ManagedRuntime } from 'effect';
 import { serve } from 'bun';
 import type { BunRequest } from "bun";
 import { fetchRequestHandler } from '@trpc/server/adapters/fetch';
@@ -10,10 +6,9 @@ import { appRouter } from '@/web/trpc';
 
 import dashboardIndex from "@/web/dashboard/index.html";
 import dashboardLogin from "@/web/dashboard/login.html";
+import { LiveRuntimeContainer } from './container';
 
-export const Runtime = ManagedRuntime.make(Layer.mergeAll(
-  Layer.succeed(QueueService, QueueServiceLive(bullQueue))
-));
+export const Runtime = ManagedRuntime.make(LiveRuntimeContainer);
 
 // Workaround: https://github.com/oven-sh/bun/issues/17595
 // this is safe as every API needs a valid session. Just a niceties so that if there's no valid

@@ -1,11 +1,16 @@
 import { Worker, Job, DelayedError } from "bullmq";
 import { loadQueues } from "@/services/queue-registry";
-import { BaseQueue } from "@/queues/base-queue";
-import { Effect, Layer, Data, pipe, ManagedRuntime } from "effect";
-import { addQueueMetadata, type QueueMiddleware } from "@/queues/middleware/base";
+import { BaseQueue, type QueueConstructor } from "@/queues/base-queue";
+import { Effect, Data, pipe, ManagedRuntime, Logger } from "effect";
+import { addQueueMetadata, hasMiddleware, type QueueMiddleware } from "@/queues/middleware/base";
 import { WithoutOverlapping } from "@/queues/middleware/without-overlapping";
-import { RedisLockLive, LockService, RedisTag } from "@/services/lock";
-import { Redis } from "ioredis";
+import { LockService } from "@/services/lock";
+// Note: direct Redis usage is not required here; the LockService is provided via Effect Layer
+import { LiveRuntimeContainer } from "./container";
+import type { Layer } from "effect";
+
+// Extract the type from LiveRuntimeContainer
+type LiveRuntimeContainerType = Layer.Layer.Success<typeof LiveRuntimeContainer>;
 
 // --- Custom Error Types ---
 class UnhandledJobError extends Data.TaggedError("UnhandledJobError")<{ jobName: string }> { }
@@ -16,37 +21,105 @@ class JobReleased extends Data.TaggedError("JobReleased")<{ jobName: string; del
 class JobDiscarded extends Data.TaggedError("JobDiscarded")<{ jobName: string; cause: string }> { }
 
 /**
- * Runs the middleware chain for a job.
+ * Runs the middleware chain for a job sequentially, short-circuiting on first failure.
  */
 function runMiddleware(job: Job, middleware: QueueMiddleware[]): Effect.Effect<void, MiddlewareError | JobReleased | JobDiscarded, LockService> {
-  return Effect.all(
-    middleware.map((mw) =>
-      pipe(
+  return Effect.gen(function* () {
+    for (const mw of middleware) {
+      const result = yield* pipe(
         mw.handle(job),
-        Effect.mapError((cause) => new MiddlewareError({ jobName: job.name, middleware: mw.key, cause })),
-        Effect.flatMap((result): Effect.Effect<void, JobReleased | JobDiscarded, never> => {
-          if (typeof result === "number") {
-            return Effect.fail(new JobReleased({ jobName: job.name, delay: result }));
-          }
-          if (result === false) {
-            return Effect.fail(new JobDiscarded({ jobName: job.name, cause: `Middleware ${mw.key} returned false` }));
-          }
-          return Effect.void;
-        })
-      )
-    )
-  ).pipe(Effect.asVoid);
+        Effect.mapError((cause) => new MiddlewareError({ jobName: job.name, middleware: mw.key, cause }))
+      );
+
+      if (typeof result === "number") {
+        return yield* Effect.fail(new JobReleased({ jobName: job.name, delay: result }));
+      }
+      if (result === false) {
+        return yield* Effect.fail(new JobDiscarded({ jobName: job.name, cause: `Middleware ${mw.key} returned false` }));
+      }
+      // result === true -> continue
+    }
+  }).pipe(Effect.asVoid);
+}
+
+/**
+ * Creates a per-job logger that writes all Effect logs into the job's metadata as string lines.
+ */
+function createJobMetadataLogger(job: Job) {
+  // Using loose typing for compatibility with Effect logger options shape
+  const toStringSafe = (value: unknown): string => {
+    if (typeof value === "string") return value;
+    if (value == null) return "";
+    try {
+      return typeof value === "object" ? JSON.stringify(value) : String(value);
+    } catch {
+      return String(value);
+    }
+  };
+
+  return Logger.make((options: any) => {
+    try {
+      const parts: string[] = [];
+      const msgs: unknown[] = Array.isArray(options?.message)
+        ? options.message
+        : options?.message != null
+          ? [options.message]
+          : [];
+      for (const m of msgs) parts.push(toStringSafe(m));
+      const line = parts.join(" ").trim();
+      if (line.length > 0) {
+        addQueueMetadata(job, "log", [line]);
+      }
+    } catch {
+      // Never let the logger break job execution
+    }
+  });
+}
+
+/**
+ * Helper function to release WithoutOverlapping lock if present
+ */
+function releaseWithoutOverlappingLock(job: Job, middleware: QueueMiddleware[]): Effect.Effect<void, Error, LockService> {
+  const withoutOverlapping = middleware.find((m) => m instanceof WithoutOverlapping) as WithoutOverlapping | undefined;
+  if (withoutOverlapping) {
+    return Effect.gen(function* () {
+      yield* withoutOverlapping.release(job);
+      console.log(`[Worker] Released job lock for ${job.name}#${job.id} due to failure.`);
+      addQueueMetadata(job, "log", [`Released job lock for ${job.name}#${job.id} due to failure.`]);
+    });
+  }
+  return Effect.void;
+}
+
+/**
+ * Helper function to release WithoutOverlapping lock from job metadata (for use outside Effect context)
+ */
+async function releaseWithoutOverlappingLockFromMetadata(job: Job, runtime: ManagedRuntime.ManagedRuntime<LiveRuntimeContainerType, unknown>) {
+  const hasWO = hasMiddleware(job, (key) => key.startsWith('without-overlapping'));
+  if (hasWO) {
+    try {
+      // Create a temporary WithoutOverlapping instance to release the lock
+      // Use job name as keySuffix since we just need to call release
+      const withoutOverlapping = new WithoutOverlapping(job.name);
+      await runtime.runPromise(withoutOverlapping.release(job));
+      console.log(`[Worker] Released job lock for ${job.name}#${job.id} due to failure (from metadata).`);
+      addQueueMetadata(job, "log", [`Released job lock for ${job.name}#${job.id} due to failure (from metadata).`] );
+    } catch (error) {
+      console.error(`[Worker] Failed to release lock for ${job.name}#${job.id}:`, error);
+      addQueueMetadata(job, "log", [`Failed to release lock for ${job.name}#${job.id}: ${String(error)}`]);
+    }
+  }
 }
 
 /**
  * Creates an Effect-based job processor.
  */
-function makeJobProcessor(registry: Record<string, typeof BaseQueue<any>>) {
+function makeJobProcessor(registry: Record<string, QueueConstructor<any>>) {
   return (job: Job) =>
     Effect.gen(function* () {
       // Mark job as working when processing starts
       addQueueMetadata(job, "progress", "working");
-      
+
       const QueueClass = registry[job.name];
 
       if (!QueueClass) {
@@ -59,29 +132,52 @@ function makeJobProcessor(registry: Record<string, typeof BaseQueue<any>>) {
       });
 
       const middleware = QueueClass.middleware(data);
-      
+
+      // Store middleware info in job metadata for error handling
+      addQueueMetadata(job, "middleware", middleware.map(m => m.key));
+
       yield* runMiddleware(job, middleware);
 
       const result = QueueClass.handle(data);
-      
+
       // Handle different return types: Effect, Promise, or synchronous
       if (Effect.isEffect(result)) {
         // If it's an Effect, run it directly with proper error handling and provide LockService context
         yield* result.pipe(
-          Effect.mapError((cause) => new JobExecutionError({ jobName: job.name, cause }))
+          Effect.mapError((cause) => new JobExecutionError({ jobName: job.name, cause })),
+          Effect.catchAll((error) => 
+            Effect.gen(function* () {
+              yield* releaseWithoutOverlappingLock(job, middleware);
+              return yield* Effect.fail(error);
+            })
+          )
         );
       } else if (result instanceof Promise) {
         // If it's a Promise, wrap it with Effect.tryPromise
         yield* Effect.tryPromise({
           try: () => result,
           catch: (cause) => new JobExecutionError({ jobName: job.name, cause }),
-        });
+        }).pipe(
+          Effect.catchAll((error) => 
+            Effect.gen(function* () {
+              yield* releaseWithoutOverlappingLock(job, middleware);
+              return yield* Effect.fail(error);
+            })
+          )
+        );
       } else if (result !== undefined) {
         // If it's a synchronous result, wrap it with Effect.try
         yield* Effect.try({
           try: () => result,
           catch: (cause) => new JobExecutionError({ jobName: job.name, cause }),
-        });
+        }).pipe(
+          Effect.catchAll((error) => 
+            Effect.gen(function* () {
+              yield* releaseWithoutOverlappingLock(job, middleware);
+              return yield* Effect.fail(error);
+            })
+          )
+        );
       }
 
       // Mark job as finished when processing completes successfully
@@ -92,6 +188,7 @@ function makeJobProcessor(registry: Record<string, typeof BaseQueue<any>>) {
       if (withoutOverlapping) {
         yield* withoutOverlapping.release(job);
         console.log(`[Worker] Released job lock for ${job.name}#${job.id} because it has finished processing.`);
+        addQueueMetadata(job, "log", [`Released job lock for ${job.name}#${job.id} because it has finished processing.`]);
       }
 
     });
@@ -101,14 +198,8 @@ function makeJobProcessor(registry: Record<string, typeof BaseQueue<any>>) {
 const main = async () => {
   const registry = await loadQueues();
   const connection = { host: "127.0.0.1", port: 6379 } as const;
-  const redis = new Redis(connection);
-
-  // --- Define the application's Layer ---
-  // For production, use the Redis-backed lock service.
-  const AppLayer = Layer.provide(RedisLockLive, Layer.succeed(RedisTag, redis));
-
   // Create a runtime that provides the application's dependencies
-  const Runtime = ManagedRuntime.make(AppLayer);
+  const Runtime = ManagedRuntime.make(LiveRuntimeContainer);
 
   // For testing, you could use the in-memory lock service:
   // const AppLayer = MemoryLockLive;
@@ -118,11 +209,15 @@ const main = async () => {
   const worker = new Worker(
     "app",
     async (job: Job, token?: string) => {
+      const jobLogger = createJobMetadataLogger(job);
       const effect = pipe(
         processJob(job),
+        // Attach per-job logger that mirrors all Effect logs into job metadata
+        Effect.provide(Logger.replace(Logger.stringLogger, Logger.zip(Logger.stringLogger, jobLogger))),
         Effect.catchAll((error) => {
           if (error instanceof JobReleased) {
             console.warn(`[Worker] Releasing job ${error.jobName} for ${error.delay}s`);
+            addQueueMetadata(job, "log", [`Releasing job ${error.jobName} for ${error.delay}s`] );
             return Effect.fail(error);
           }
           if (error instanceof JobDiscarded) {
@@ -130,29 +225,40 @@ const main = async () => {
             addQueueMetadata(job, "progress", "skipped");
             if (!error.cause.includes("without-overlapping")) {
               console.log(`[Worker] Skipping job ${error.jobName}: ${error.cause}`);
+              addQueueMetadata(job, "log", [`Skipping job ${error.jobName}: ${error.cause}`]);
             }
             return Effect.flatMap(LockService, () => Effect.void);
           }
           // Mark job as failed for all other errors
           addQueueMetadata(job, "progress", "failed");
           console.error("Job failed", error);
+           addQueueMetadata(job, "log", [
+             `Job failed: ${error instanceof Error ? error.message : String(error)}`
+           ]);
           return Effect.fail(error);
         })
       );
 
       try {
-        await Runtime.runPromise(effect as Effect.Effect<void | undefined, Error, LockService>);
+        await Runtime.runPromise(effect as Effect.Effect<void | undefined, Error, LiveRuntimeContainerType>);
       } catch (error) {
         if (error instanceof JobReleased) {
           await job.moveToDelayed(Date.now() + error.delay * 1000, token);
           throw new DelayedError();
         }
+        
+        // Release WithoutOverlapping lock if present when job fails
+        await releaseWithoutOverlappingLockFromMetadata(job, Runtime);
+        
         // Mark job as failed if it wasn't already marked by Effect.catchAll
         // Check if progress metadata is already set to avoid overwriting skipped status
         const currentProgress = job.data.__metadata?.progress;
         if (!currentProgress) {
           addQueueMetadata(job, "progress", "failed");
         }
+        addQueueMetadata(job, "log", [
+          `BullMQ error caught: ${error instanceof Error ? error.message : String(error)}`
+        ]);
         // For all other errors, let BullMQ handle the failure.
         throw error;
       }
@@ -160,10 +266,17 @@ const main = async () => {
     { connection, concurrency: 10 }
   );
 
-  worker.on("failed", (job, err) => {
+  worker.on("failed", async (job, err) => {
     console.error(`[BullMQ] Job ${job?.name}#${job?.id} failed: ${err.message}`);
-    // Ensure failed jobs are marked with failed progress
     if (job) {
+      addQueueMetadata(job, "log", [`Job ${job.name}#${job.id} failed: ${err.message}`]);
+    }
+    
+    if (job) {
+      // Release WithoutOverlapping lock if present when job fails
+      await releaseWithoutOverlappingLockFromMetadata(job, Runtime);
+      
+      // Ensure failed jobs are marked with failed progress
       addQueueMetadata(job, "progress", "failed");
     }
   });
@@ -173,4 +286,5 @@ const main = async () => {
 
 main().catch((err) => {
   console.error("Failed to start worker:", err);
-  process.exit(1);});
+  process.exit(1);
+});

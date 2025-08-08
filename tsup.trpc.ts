@@ -9,5 +9,4 @@ const tsupConfig = defineConfig({
   tsconfig: 'tsconfig.json',
 });
 
-// eslint-disable-next-line
 export default tsupConfig;
