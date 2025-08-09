@@ -25,12 +25,24 @@ bun install
 
 ### Environment
 
-Set `DASHBOARD_TOKEN` to a secret value. It is used to protect the dashboard.
+Set the following environment variables as needed:
+
+- `DASHBOARD_TOKEN` (required): Secret used to protect the dashboard. The server sets/reads a `TOKEN` cookie for access.
+- `REDIS_HOST` (default `127.0.0.1`): Redis host for BullMQ and locks.
+- `REDIS_PORT` (default `6379`): Redis port.
+- `QUEUE_NAME` (default `app`): BullMQ queue name used by both server and worker.
+- `WORKER_CONCURRENCY` (default `10`): Number of concurrent jobs the worker processes.
+- `WORKER_LOCK_DURATION_MS` (default `30000`): BullMQ lock duration.
+- `WORKER_STALLED_INTERVAL_MS` (default `30000`): Interval to check stalled jobs.
+- `WORKER_MAX_STALLED` (default `2`): Max times a job is marked stalled before failing.
+- `BUN_PUBLIC_APP_NAME` (optional): Display name used in the dashboard UI.
 
 ### Running the Development Server
 
 ```bash
-bun run index.tsx
+bun run index.ts
+# or with hot reload
+bun --hot index.ts
 ```
 
 This starts the HTTP server, exposes `/trpc` endpoints and serves the dashboard at `/dashboard`.
@@ -41,12 +53,12 @@ This starts the HTTP server, exposes `/trpc` endpoints and serves the dashboard 
 bun run worker.ts
 ```
 
-The worker pulls jobs from the `app` queue and executes them using the Effect-based processor.
+The worker pulls jobs from the `app` queue (configurable via `QUEUE_NAME`) and executes them using the Effect-based processor.
 
 ## Project Layout
 
 ```
-index.tsx     # HTTP server entry with tRPC routes and dashboard
+index.ts      # HTTP server entry with tRPC routes and dashboard
 worker.ts     # Queue worker implementation
 src/
   queues/     # Queue definitions and middleware
@@ -68,39 +80,41 @@ and tRPC types is exported for your react query (or vanilla client) to use:
 import { QueryClient } from "@tanstack/react-query";
 import { createTRPCOptionsProxy } from '@trpc/tanstack-react-query';
 import { createTRPCClient, httpBatchLink } from "@trpc/client";
-import type { API } from "../../../dist/api";
+import type { API } from "./dist/api"; // path to the generated api.d.ts
+
 export const queryClient = new QueryClient();
 
 const trpcClient = createTRPCClient<API>({
-    links: [httpBatchLink({ url: 'http://localhost:3000/trpc' })],
+  links: [httpBatchLink({ url: 'http://localhost:3000/trpc' })],
 });
 
-export const trpc = createTRPCOptionsProxy<AppRouter>({
-    client: trpcClient,
-    queryClient,
+export const trpc = createTRPCOptionsProxy<API>({
+  client: trpcClient,
+  queryClient,
 });
 
 // use as normal:
-const trpc = useTRPC();
-const queryClient = useQueryClient();
+// const trpc = useTRPC();
+// const queryClient = useQueryClient();
 
 // Create QueryOptions which can be passed to query hooks
-const myQueryOptions = trpc.path.to.query.queryOptions({ /** inputs */ })
-const myQuery = useQuery(myQueryOptions)
+// const myQueryOptions = trpc.queues.list.queryOptions({ start: 0, end: 100, ascending: true })
+// const myQuery = useQuery(myQueryOptions)
 ```
 ...or vanilla:
 ```ts
 import { createTRPCClient, httpBatchLink } from '@trpc/client';
-import type { API } from "../../../dist/api";
-const trpcClient = createTRPCClient<API>({
-    links: [httpBatchLink({ url: 'http://localhost:3000/trpc' })],
+import type { API } from "./dist/api"; // path to the generated api.d.ts
+
+const client = createTRPCClient<API>({
+  links: [httpBatchLink({ url: 'http://localhost:3000/trpc' })],
 });
 
 // use as normal:
-const bilbo = await client.getUser.query('id_bilbo');
+const jobs = await client.queues.list.query({ start: 0, end: 100, ascending: true });
 ```
 
-_if you need to update it just rerun the script and copy and paste the generated `api.d.ts` file. This is under the assumption that you or your team are the one consuming it and you're ABSOLUTELY sure that this workflow is fine for you (it is for me)._
+_if you need to update it just rerun the script and copy and paste the generated `api.d.ts` file. This is under the assumption that you or your team are the one consuming it and you're ABSOLUTELY sure that this workflow is fine for you (it is for me)._ 
 
 ### Example Queue
 
