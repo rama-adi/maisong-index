@@ -1,4 +1,4 @@
-import { Queue } from "bullmq";
+import { Queue, type JobsOptions } from "bullmq";
 import { BaseQueue, type QueueConstructor } from "@/queues/base-queue.js";
 import { Context, Effect, Schema } from "effect";
 
@@ -136,15 +136,51 @@ export function QueueServiceLive(bullQueue: Queue): QueueService {
                     )
                 );
 
+                // Build robust default job options
+                const serialize = (value: unknown) => {
+                  try { return JSON.stringify(value); } catch { return String(value); }
+                };
+                const stableHash = (value: unknown) => {
+                  // djb2 on JSON string for deterministic jobId
+                  const input = serialize(value);
+                  let hash = 5381;
+                  for (let i = 0; i < input.length; i++) {
+                    hash = ((hash << 5) + hash) + input.charCodeAt(i);
+                    hash |= 0; // force 32-bit
+                  }
+                  return (hash >>> 0).toString(36);
+                };
+
+                const baseId = `${jobClass.name}:${stableHash(job.data)}`;
+
+                const defaultOptions: JobsOptions = {
+                  jobId: baseId,
+                  attempts: 5,
+                  backoff: {
+                    type: "exponential",
+                    delay: 2000,
+                  },
+                  removeOnComplete: { age: 24 * 60 * 60, count: 1000 }, // keep 1 day or 1k
+                  removeOnFail: { age: 7 * 24 * 60 * 60, count: 5000 }, // keep 7 days or 5k
+                };
+
+                // Allow overriding via metadata on the job's data
+                const providedMeta = (job as any)?.options as Partial<JobsOptions> | undefined;
+                const options: JobsOptions = { ...defaultOptions, ...(providedMeta ?? {}) };
+
                 // If validation passes, enqueue the job
                 yield* Effect.tryPromise(() =>
-                    bullQueue.add(jobClass.name, {
+                    bullQueue.add(
+                      jobClass.name,
+                      {
                         __data: job.data,
                         __metadata: {
-                            name: jobClass.name,
-                            log: []
+                          name: jobClass.name,
+                          log: []
                         }
-                    })
+                      },
+                      options
+                    )
                 ).pipe(
                     Effect.mapError((err) =>
                         new Error(`Failed to enqueue ${jobClass.name}: ${String(err)}`)

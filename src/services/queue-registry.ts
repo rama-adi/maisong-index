@@ -16,18 +16,22 @@ export async function loadQueues() {
 
   for (const file of files) {
     const modulePath = path.join(queuesDir, file);
-    const mod = await import(modulePath);
+    try {
+      const mod = await import(modulePath);
 
-    for (const exported of Object.values(mod)) {
-      if (
-        typeof exported === "function" &&
-        exported.prototype instanceof BaseQueue
-      ) {
-        const cls = exported as unknown as QueueConstructor<any> & { name: string };
-        if (cls.name) {
-          registry[cls.name] = cls;
+      for (const exported of Object.values(mod)) {
+        if (
+          typeof exported === "function" &&
+          exported.prototype instanceof BaseQueue
+        ) {
+          const cls = exported as unknown as QueueConstructor<any> & { name: string };
+          if (cls.name) {
+            registry[cls.name] = cls;
+          }
         }
       }
+    } catch (error) {
+      console.warn(`[QueueRegistry] Failed to load ${modulePath}:`, error);
     }
   }
   return registry;

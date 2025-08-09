@@ -1,4 +1,4 @@
-import { Worker, Job, DelayedError } from "bullmq";
+import { Worker, Job, DelayedError, Queue } from "bullmq";
 import { loadQueues } from "@/services/queue-registry";
 import { BaseQueue, type QueueConstructor } from "@/queues/base-queue";
 import { Effect, Data, pipe, ManagedRuntime, Logger } from "effect";
@@ -197,7 +197,18 @@ function makeJobProcessor(registry: Record<string, QueueConstructor<any>>) {
 // --- Main Application Bootstrap ---
 const main = async () => {
   const registry = await loadQueues();
-  const connection = { host: "127.0.0.1", port: 6379 } as const;
+
+  // Configurable connection and worker settings via env
+  const queueName = process.env.QUEUE_NAME ?? "app";
+  const redisHost = process.env.REDIS_HOST ?? "127.0.0.1";
+  const redisPort = Number(process.env.REDIS_PORT ?? 6379);
+  const concurrency = Number(process.env.WORKER_CONCURRENCY ?? 10);
+  const lockDuration = Number(process.env.WORKER_LOCK_DURATION_MS ?? 30000);
+  const stalledInterval = Number(process.env.WORKER_STALLED_INTERVAL_MS ?? 30000);
+  const maxStalledCount = Number(process.env.WORKER_MAX_STALLED ?? 2);
+
+  const connection = { host: redisHost, port: redisPort } as const;
+
   // Create a runtime that provides the application's dependencies
   const Runtime = ManagedRuntime.make(LiveRuntimeContainer);
 
@@ -207,7 +218,7 @@ const main = async () => {
   const processJob = makeJobProcessor(registry);
 
   const worker = new Worker(
-    "app",
+    queueName,
     async (job: Job, token?: string) => {
       const jobLogger = createJobMetadataLogger(job);
       const effect = pipe(
@@ -263,8 +274,17 @@ const main = async () => {
         throw error;
       }
     },
-    { connection, concurrency: 10 }
+    {
+      connection,
+      concurrency,
+      lockDuration,
+      stalledInterval,
+      maxStalledCount,
+    }
   );
+
+  // Queue instance for administrative operations in event handlers
+  const adminQueue = new Queue(queueName, { connection });
 
   worker.on("failed", async (job, err) => {
     console.error(`[BullMQ] Job ${job?.name}#${job?.id} failed: ${err.message}`);
@@ -281,7 +301,52 @@ const main = async () => {
     }
   });
 
-  console.log("[Worker] Listening for jobs on 'myQueue'...");
+  worker.on("stalled", async (jobId) => {
+    try {
+      const job = await adminQueue.getJob(jobId);
+      if (!job) return;
+      console.warn(`[BullMQ] Job ${job.name}#${job.id} stalled; attempting lock cleanup`);
+      addQueueMetadata(job, "log", [
+        `Job ${job.name}#${job.id} stalled; attempting lock cleanup`
+      ]);
+      await releaseWithoutOverlappingLockFromMetadata(job, Runtime);
+    } catch (error) {
+      console.error(`[BullMQ] Error handling stalled job ${jobId}:`, error);
+    }
+  });
+
+  worker.on("error", (err) => {
+    console.error(`[BullMQ] Worker error:`, err);
+  });
+
+  worker.on("ready", () => {
+    console.log(`[Worker] Ready. Connected to ${redisHost}:${redisPort}.`);
+  });
+
+  worker.on("closed", () => {
+    console.log(`[Worker] Closed.`);
+  });
+
+  worker.on("drained", () => {
+    console.log(`[Worker] Queue drained.`);
+  });
+
+  console.log(`[Worker] Listening for jobs on '${queueName}' with concurrency ${concurrency}...`);
+
+  const shutdown = async (signal: string) => {
+    try {
+      console.log(`[Worker] Received ${signal}. Shutting down...`);
+      await worker.close();
+      await adminQueue.close();
+      process.exit(0);
+    } catch (error) {
+      console.error(`[Worker] Error during shutdown:`, error);
+      process.exit(1);
+    }
+  };
+
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
 };
 
 main().catch((err) => {
