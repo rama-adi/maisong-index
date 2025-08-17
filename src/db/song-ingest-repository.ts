@@ -1,29 +1,28 @@
 import { SongIngestRepository, IngestError } from "@/contracts/song-ingest-repository";
 import { Layer, Effect } from "effect";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { db } from "./db";
 import * as schema from "./schemas/musics";
 import type { ArcadeSongInfo, Song } from "@/contracts/arcade-song-info";
 
 // --- Helper Functions for Utage Processing ---
 function normalizeTitle(title: string, songId: string): { baseTitle: string; normalizedTitle: string } {
-  // Remove utage prefixes/suffixes from title and songId
+  // Remove utage markers from the human-facing title first; fall back to original title
   let baseTitle = title;
-  
-  // Handle common utage patterns
-  if (songId.includes('[宴]')) {
-    baseTitle = songId.replace('[宴]', '').trim();
-  } else if (songId.includes('(宴)')) {
-    baseTitle = songId.replace('(宴)', '').trim();
+
+  if (title.includes('[宴]')) {
+    baseTitle = title.replace('[宴]', '').trim();
+  } else if (title.includes('(宴)')) {
+    baseTitle = title.replace('(宴)', '').trim();
   }
-  
+
   // Further normalization for search (remove special characters, convert to lowercase, etc.)
   const normalizedTitle = baseTitle
     .toLowerCase()
-    .replace(/[^\w\s]/g, '') // Remove special characters
-    .replace(/\s+/g, ' ')    // Normalize whitespace
+    .replace(/[^\w\s]/g, '')
+    .replace(/\s+/g, ' ')
     .trim();
-    
+
   return { baseTitle, normalizedTitle };
 }
 
@@ -49,11 +48,8 @@ export const SongIngestRepositoryLive = Layer.succeed(SongIngestRepository, {
                                     imageURL: jacket.image_url
                                 }
                             });
-                    }
-                });
 
-                await db.transaction(async (tx) => {
-                    for (const jacket of data) {
+                        // Update any songs matching the title with the resolved R2 image URL
                         await tx.update(schema.songs)
                             .set({
                                 r2ImageUrl: `https://otogesong-blob.onebyteworks.my.id/maimai/${jacket.image_url}`
@@ -76,10 +72,8 @@ export const SongIngestRepositoryLive = Layer.succeed(SongIngestRepository, {
             try: async () => {
                 // Use a Transaction for Performance and Safety
                 await db.transaction(async (tx) => {
-                    console.log("Populating lookup tables...");
 
                     // Clear all existing utage relationships for re-computation
-                    console.log("Clearing old utage relationships for re-computation...");
                     await tx.delete(schema.utageRelationships);
 
                     // Populate Lookup Tables (Categories, Versions, Types, Difficulties)
@@ -152,9 +146,8 @@ export const SongIngestRepositoryLive = Layer.succeed(SongIngestRepository, {
                                 });
                         }
                     }
-                    console.log("Lookup tables populated.");
-
-                    console.log("Processing and upserting songs with utage analysis...");
+                    
+                    // Processing and upserting songs with utage analysis
                     
                     // Process and Insert Songs with Utage-specific fields
                     const songRelationships: Array<{
@@ -189,7 +182,6 @@ export const SongIngestRepositoryLive = Layer.succeed(SongIngestRepository, {
                         await tx.insert(schema.songs).values(songData)
                             .onDuplicateKeyUpdate({
                                 set: {
-                                    r2ImageUrl: `https://otogesong-blob.onebyteworks.my.id/404-v1.png`,
                                     title: songData.title,
                                     artist: songData.artist,
                                     imageName: songData.imageName,
@@ -224,28 +216,47 @@ export const SongIngestRepositoryLive = Layer.succeed(SongIngestRepository, {
                         // Insert sheets for the song
                         if (song.sheets && song.sheets.length > 0) {
                             for (const sheet of song.sheets) {
+                                // Ensure referenced type and difficulty exist to satisfy FK constraints
+                                const existingType = await tx.select({ id: schema.types.id })
+                                    .from(schema.types)
+                                    .where(eq(schema.types.id, sheet.type));
+                                if (existingType.length === 0) {
+                                    await tx.insert(schema.types)
+                                        .values({ id: sheet.type })
+                                        .onDuplicateKeyUpdate({ set: { id: sheet.type } });
+                                }
+
+                                const existingDifficulty = await tx.select({ id: schema.difficulties.id })
+                                    .from(schema.difficulties)
+                                    .where(eq(schema.difficulties.id, sheet.difficulty));
+                                if (existingDifficulty.length === 0) {
+                                    await tx.insert(schema.difficulties)
+                                        .values({ id: sheet.difficulty, name: sheet.difficulty, color: '#000000' })
+                                        .onDuplicateKeyUpdate({ set: { name: sheet.difficulty, color: '#000000' } });
+                                }
+
                                 const sheetInsert = await tx.insert(schema.sheets).values({
                                     songId: song.songId,
                                     typeId: sheet.type,
                                     difficultyId: sheet.difficulty,
-                                    level: sheet.level,
-                                    levelValue: sheet.levelValue.toString(),
-                                    internalLevel: sheet.internalLevel,
-                                    internalLevelValue: sheet.internalLevelValue.toString(),
-                                    noteDesigner: sheet.noteDesigner,
-                                    isSpecial: sheet.isSpecial,
-                                    version: sheet.version,
-                                    // Flatten note counts
-                                    notesTap: sheet.noteCounts.tap,
-                                    notesHold: sheet.noteCounts.hold,
-                                    notesSlide: sheet.noteCounts.slide,
-                                    notesTouch: sheet.noteCounts.touch,
-                                    notesBreak: sheet.noteCounts.break,
-                                    notesTotal: sheet.noteCounts.total,
-                                    // Flatten region availability
-                                    regionJp: sheet.regions.jp,
-                                    regionIntl: sheet.regions.intl,
-                                    regionCn: sheet.regions.cn,
+                                    level: sheet.level ?? '',
+                                    levelValue: sheet.levelValue != null ? sheet.levelValue.toString() : '0',
+                                    internalLevel: sheet.internalLevel ?? '',
+                                    internalLevelValue: sheet.internalLevelValue != null ? sheet.internalLevelValue.toString() : '0',
+                                    noteDesigner: sheet.noteDesigner ?? '',
+                                    isSpecial: Boolean(sheet.isSpecial),
+                                    version: sheet.version ?? song.version ?? '',
+                                    // Flatten note counts (fill missing with 0)
+                                    notesTap: sheet.noteCounts.tap ?? 0,
+                                    notesHold: sheet.noteCounts.hold ?? 0,
+                                    notesSlide: sheet.noteCounts.slide ?? 0,
+                                    notesTouch: sheet.noteCounts.touch ?? 0,
+                                    notesBreak: sheet.noteCounts.break ?? 0,
+                                    notesTotal: sheet.noteCounts.total ?? 0,
+                                    // Flatten region availability (non-nullable booleans)
+                                    regionJp: Boolean(sheet.regions.jp),
+                                    regionIntl: Boolean(sheet.regions.intl),
+                                    regionCn: Boolean(sheet.regions.cn),
                                 });
 
                                 // Get the inserted sheet ID from the result
@@ -271,7 +282,7 @@ export const SongIngestRepositoryLive = Layer.succeed(SongIngestRepository, {
                         }
                     }
 
-                    console.log("Computing utage relationships...");
+                    // Computing utage relationships
                     
                     // Compute utage relationships
                     // Group songs by base title for relationship analysis
@@ -311,14 +322,22 @@ export const SongIngestRepositoryLive = Layer.succeed(SongIngestRepository, {
                         });
                     });
 
-                    // Insert utage relationships
+                    // Insert utage relationships (deduplicated pairs)
                     if (songRelationships.length > 0) {
-                        console.log(`Inserting ${songRelationships.length} utage relationships...`);
-                        await tx.insert(schema.utageRelationships)
-                            .values(songRelationships);
+                        const uniqueRelationships = Array.from(
+                            new Map(
+                                songRelationships.map((rel) => [
+                                    `${rel.primarySongId}|${rel.utageSongId}`,
+                                    rel,
+                                ])
+                            ).values()
+                        );
+                        if (uniqueRelationships.length > 0) {
+                            await tx.insert(schema.utageRelationships)
+                                .values(uniqueRelationships)
+                                .onDuplicateKeyUpdate({ set: { relationshipType: sql`VALUES(${schema.utageRelationships.relationshipType})` } });
+                        }
                     }
-
-                    console.log("All songs, sheets, and utage relationships have been processed.");
                 }); // End of transaction
             },
             catch: (error) => new IngestError({ 

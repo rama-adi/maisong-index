@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 
 const tsupConfig = defineConfig({
-  entry: ['src/web/trpc/index.ts'],
+  entry: ['src/web/api-trpc/index.ts'],
   outDir: '.temp_transform',
   format: ['esm'],
   clean: true,

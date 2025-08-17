@@ -9,12 +9,13 @@ import dashboardLogin from "@/web/dashboard/login.html";
 import { LiveRuntimeContainer } from './container';
 import { QueueService } from '@/services/queue';
 import { IngestSongQueue } from '@/queues/ingest-song.queue';
+import { apiRouter } from '@/web/api-trpc/trpc';
+import { apiAppRouter } from '@/web/api-trpc';
 
 export const Runtime = ManagedRuntime.make(LiveRuntimeContainer);
 
-Runtime.runPromise(Effect.gen(function*() {
+Runtime.runPromise(Effect.gen(function* () {
   const queue = yield* QueueService;
-
   yield* queue.enqueue(new IngestSongQueue({}))
 }))
 
@@ -23,11 +24,25 @@ Runtime.runPromise(Effect.gen(function*() {
 // session, a login page is shown instead of a brief flash.
 const nonce = `/dynr_${crypto.randomUUID()}`;
 
+
 const initTrpcFetch = async (req: BunRequest) => {
   return fetchRequestHandler({
     endpoint: '/trpc',
     req: req,
     router: appRouter,
+    createContext: () => ({
+      headers: req.headers,
+      effectRuntime: Runtime,
+      cookies: req.cookies
+    }),
+  });
+}
+
+const initPublicAPI = async (req: BunRequest) => {
+  return fetchRequestHandler({
+    endpoint: '/api/v1',
+    req: req,
+    router: apiAppRouter,
     createContext: () => ({
       headers: req.headers,
       effectRuntime: Runtime,
@@ -89,6 +104,12 @@ const server = serve({
       async GET(request: BunRequest): Promise<Response> {
         return matchDashboard(request);
       },
+    },
+    "/api/v1/*": async req => {
+      return initPublicAPI(req);
+    },
+    "/api/v1": async req => {
+      return initTrpcFetch(req);
     },
     "/trpc/*": async req => {
       return initTrpcFetch(req);

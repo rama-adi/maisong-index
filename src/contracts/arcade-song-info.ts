@@ -36,12 +36,14 @@ export interface ArcadeSongInfo {
 }
 
 export interface Song {
+    internalProcessId?: number
     songId: string
     category: string
     title: string
     artist: string
     bpm?: number
     imageName: string
+    r2ImageUrl?: string
     version: string
     releaseDate: string
     isNew: boolean

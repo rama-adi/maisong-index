@@ -29,7 +29,9 @@ export const musicJacket = mysqlTable('music_jackets', {
     id: int().autoincrement().primaryKey(),
     songTitle: varchar('song_title', { length: 500 }),
     imageURL: varchar('image_url', {length: 500})
-})
+}, (table) => [
+    uniqueIndex('music_jackets_song_title_uq').on(table.songTitle),
+])
 
 export const regions = mysqlTable('regions', {
     id: varchar('id', { length: 255 }).primaryKey(), // Corresponds to region
@@ -43,7 +45,7 @@ export const songs = mysqlTable('songs', {
     title: varchar('title', { length: 500 }).notNull(),
     artist: varchar('artist', { length: 500 }).notNull(),
     imageName: varchar('image_name', { length: 255 }).notNull(),
-    r2ImageUrl: varchar('r2_image_url', { length: 255 }),
+    r2ImageUrl: varchar('r2_image_url', { length: 255 }).default('https://otogesong-blob.onebyteworks.my.id/404-v1.png'),
     releaseDate: varchar('release_date', { length: 255 }).notNull(),
     isNew: boolean('is_new').notNull(),
     isLocked: boolean('is_locked').notNull(),
@@ -107,7 +109,9 @@ export const regionOverrides = mysqlTable('region_overrides', {
     versionId: varchar('version_id', { length: 255 }).references(() => versions.id),
     level: varchar('level', { length: 255 }),
     levelValue: decimal('level_value', { precision: 8, scale: 3 }),
-});
+}, (table) => [
+    uniqueIndex('region_overrides_sheet_region_uq').on(table.sheetId, table.region),
+]);
 
 // -- UTAGE RELATIONSHIPS TABLE --
 // This table pre-computes the relationships between regular songs and their utage variants

@@ -1,4 +1,6 @@
 import { SongIngestRepositoryLive } from "@/db/song-ingest-repository";
+import { SongSearchRepositoryLive } from "@/db/song-search-repository";
+import { FuzzySearchLive } from "@/services/fuzzy-search";
 import { RedisLockLive, RedisTag } from "@/services/lock";
 import { QueueService, QueueServiceLive } from "@/services/queue";
 import { FetchHttpClient, HttpClient } from "@effect/platform";
@@ -17,6 +19,8 @@ const redis = new Redis(connection);
 // Use this for main and worker.
 export const LiveRuntimeContainer = Layer.mergeAll(
   SongIngestRepositoryLive,
+  SongSearchRepositoryLive,
+  FuzzySearchLive,
   FetchHttpClient.layer,
   Layer.succeed(QueueService, QueueServiceLive(bullQueue)),
   Layer.provide(RedisLockLive, Layer.succeed(RedisTag, redis))

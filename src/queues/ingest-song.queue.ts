@@ -37,7 +37,7 @@ export class IngestSongQueue extends QueueTag("IngestSongQueue")<typeof IngestSo
 
            yield* Effect.log("Getting data for jacket");
            const jacketResult = yield* httpClient.get("https://maimai.sega.jp/data/maimai_songs.json");
-           const jacketData = JSON.parse(yield* result.text) as MaimaiJsonSongInfo[];
+           const jacketData = JSON.parse(yield* jacketResult.text) as MaimaiJsonSongInfo[];
 
            yield* Effect.log("Ingesting jacket data...");
            yield* ingestRepo.ingestSongJacket(jacketData);
