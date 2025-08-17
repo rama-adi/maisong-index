@@ -15,6 +15,7 @@
     "typescript": "^5"
   },
   "scripts": {
+    "start": "bun index.ts",
     "trpc-codegen": "bun codegen-trpc.ts"
   },
   "dependencies": {
