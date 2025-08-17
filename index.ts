@@ -1,4 +1,4 @@
-import { ManagedRuntime } from 'effect';
+import { Effect, ManagedRuntime } from 'effect';
 import { serve } from 'bun';
 import type { BunRequest } from "bun";
 import { fetchRequestHandler } from '@trpc/server/adapters/fetch';
@@ -7,8 +7,16 @@ import { appRouter } from '@/web/trpc';
 import dashboardIndex from "@/web/dashboard/index.html";
 import dashboardLogin from "@/web/dashboard/login.html";
 import { LiveRuntimeContainer } from './container';
+import { QueueService } from '@/services/queue';
+import { IngestSongQueue } from '@/queues/ingest-song.queue';
 
 export const Runtime = ManagedRuntime.make(LiveRuntimeContainer);
+
+Runtime.runPromise(Effect.gen(function*() {
+  const queue = yield* QueueService;
+
+  yield* queue.enqueue(new IngestSongQueue({}))
+}))
 
 // Workaround: https://github.com/oven-sh/bun/issues/17595
 // this is safe as every API needs a valid session. Just a niceties so that if there's no valid

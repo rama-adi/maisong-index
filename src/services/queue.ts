@@ -128,11 +128,18 @@ export function QueueServiceLive(bullQueue: Queue): QueueService {
                 const jobClass = job.constructor as QueueConstructor<any>;
 
                 // Validate the job data against its schema
-                yield* Effect.try(() =>
-                    jobClass.validate(job.data)
-                ).pipe(
-                    Effect.mapError((parseError) =>
-                        new Error(`Job validation failed for ${jobClass.name}: ${String(parseError)}`)
+                yield* Effect.log(`Validating job data for ${jobClass.name}: ${JSON.stringify(job.data)}`);
+                
+                yield* Effect.try(() => {
+                    const result = jobClass.validate(job.data);
+                    return result;
+                }).pipe(
+                    Effect.mapError((parseError) => {
+                        const errorDetails = parseError instanceof Error ? parseError.message : String(parseError);
+                        return new Error(`Job validation failed for ${jobClass.name}. Data: ${JSON.stringify(job.data)}. Error: ${errorDetails}`);
+                    }),
+                    Effect.tap((validatedData) => 
+                        Effect.log(`Successfully validated data for ${jobClass.name}: ${JSON.stringify(validatedData)}`)
                     )
                 );
 

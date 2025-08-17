@@ -1,5 +1,7 @@
+import { SongIngestRepositoryLive } from "@/db/song-ingest-repository";
 import { RedisLockLive, RedisTag } from "@/services/lock";
 import { QueueService, QueueServiceLive } from "@/services/queue";
+import { FetchHttpClient, HttpClient } from "@effect/platform";
 import { Queue } from "bullmq";
 import { Layer } from "effect";
 import { Redis } from "ioredis";
@@ -14,6 +16,8 @@ const redis = new Redis(connection);
 
 // Use this for main and worker.
 export const LiveRuntimeContainer = Layer.mergeAll(
+  SongIngestRepositoryLive,
+  FetchHttpClient.layer,
   Layer.succeed(QueueService, QueueServiceLive(bullQueue)),
   Layer.provide(RedisLockLive, Layer.succeed(RedisTag, redis))
 );
